@@ -33,22 +33,37 @@ function parseMinutes(text: string): number | null {
   return hours || mins ? total : null;
 }
 
-function readState(): { title: string } | null {
+interface State {
+  title: string;
+  remainingMin: number | null;
+}
+
+function readState(): State | null {
   if (!existsSync(STATE_FILE)) return null;
   return JSON.parse(readFileSync(STATE_FILE, "utf8"));
 }
 
-function writeState(title: string): void {
-  writeFileSync(STATE_FILE, JSON.stringify({ title }));
+function writeState(data: PageData): void {
+  const state: State = { title: data.title, remainingMin: data.remainingMin };
+  writeFileSync(STATE_FILE, JSON.stringify(state));
 }
 
-async function notify(title: string): Promise<void> {
+function formatBody(data: PageData): string {
+  if (data.remainingMin === null) return data.title;
+  const h = Math.floor(data.remainingMin / 60);
+  const m = data.remainingMin % 60;
+  const duration = h > 0 ? `${h}h ${m}m` : `${m}m`;
+  return `${data.title} (${duration} remaining)`;
+}
+
+async function notify(data: PageData): Promise<void> {
+  const body = formatBody(data);
   await fetch(`https://ntfy.sh/${NTFY_TOPIC}`, {
     method: "POST",
-    body: title,
+    body,
     headers: { Title: "Now on Criterion Channel" },
   });
-  console.log(`Notified: ${title}`);
+  console.log(`Notified: ${body}`);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -66,10 +81,10 @@ if (remainingMin !== null && remainingMin > POLL_THRESHOLD_MIN) {
 console.log(`${remainingMin ?? "?"} min remaining — polling`);
 
 async function checkAndNotify(): Promise<boolean> {
-  const { title } = await fetchPage();
-  if (title !== prev?.title) {
-    await notify(title);
-    writeState(title);
+  const data = await fetchPage();
+  if (data.title !== prev?.title) {
+    await notify(data);
+    writeState(data);
     return true;
   }
   return false;
