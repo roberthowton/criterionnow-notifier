@@ -9,7 +9,7 @@ Notifications are sent via [ntfy.sh](https://ntfy.sh) to the topic configured in
 ### ntfy app (iOS / Android)
 
 1. Install [ntfy](https://ntfy.sh/#subscribe)
-2. Add a subscription for the topic (e.g. `criterionnow-notifier-d0r@l1l1`)
+2. Add a subscription for the topic (e.g. `YOUR_NTFY_TOPIC`)
 
 ### Web
 
