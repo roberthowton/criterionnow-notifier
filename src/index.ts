@@ -13,24 +13,47 @@ interface PageData {
   remainingMin: number | null;
 }
 
-async function fetchPage(): Promise<PageData> {
-  const res = await fetch("https://whatsonnow.criterionchannel.com/");
-  const html = await res.text();
-  const $ = load(html);
-  const title = $("h2.whatson__title").first().text().trim();
-  if (!title) throw new Error("Could not find film title");
-  const timerText = $(".whatson__eyebrow--bold").first().text().trim();
-  const remainingMin = parseMinutes(timerText);
-  return { title, remainingMin };
+// whatsonnow.criterionchannel.com now redirects here (site redesign, Sep 2026)
+const LIVE_URL = "https://www.criterionchannel.com/live/1emmgvqX/criterion-24-7";
+
+interface ScheduleEntry {
+  title: string;
+  start: number;
+  end: number;
 }
 
-function parseMinutes(text: string): number | null {
-  let total = 0;
-  const hours = text.match(/(\d+)\s+hour/);
-  const mins = text.match(/(\d+)\s+min/);
-  if (hours) total += parseInt(hours[1]) * 60;
-  if (mins) total += parseInt(mins[1]);
-  return hours || mins ? total : null;
+async function fetchPage(): Promise<PageData> {
+  const res = await fetch(LIVE_URL);
+  if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
+  const html = await res.text();
+
+  const now = Date.now();
+  const current = parseSchedule(html).find((e) => e.start <= now && now < e.end);
+  if (current) {
+    return { title: current.title, remainingMin: Math.ceil((current.end - now) / 60_000) };
+  }
+
+  // Fallback: the rendered hero title (no timing info available)
+  const $ = load(html);
+  const title = $('main h1[class*="__title"]').first().text().trim();
+  if (!title) throw new Error("Could not find film title");
+  return { title, remainingMin: null };
+}
+
+// The schedule lives in the Next.js RSC payload: self.__next_f.push([1,"<json-escaped string>"])
+function parseSchedule(html: string): ScheduleEntry[] {
+  const payload = [...html.matchAll(/self\.__next_f\.push\((\[1,"(?:[^"\\]|\\.)*"\])\)/g)]
+    .map((m) => (JSON.parse(m[1]) as [number, string])[1])
+    .join("");
+  const entries = new Map<string, ScheduleEntry>();
+  const re = /\{"startTime":"([^"]+)","endTime":"([^"]+)","episodeTitle":("(?:[^"\\]|\\.)*")/g;
+  for (const m of payload.matchAll(re)) {
+    const start = Date.parse(m[1]);
+    const end = Date.parse(m[2]);
+    if (isNaN(start) || isNaN(end)) continue;
+    entries.set(m[1], { title: JSON.parse(m[3]), start, end });
+  }
+  return [...entries.values()];
 }
 
 interface State {

@@ -1,17 +1,22 @@
-name: Debug HTML dump
+name: Debug fixed scraper
 
 on:
   push:
     branches: [claude/criterion-notifier-diagnosis-3wrz2e]
 
 jobs:
-  dump:
+  run:
     runs-on: ubuntu-latest
     steps:
-      - run: |
-          curl -sSL -A "Mozilla/5.0" -D - https://whatsonnow.criterionchannel.com/ -o page.html
-          echo "==== bytes: $(wc -c < page.html)"
-          echo "==== class names containing whatson/title/time:"
-          grep -oE 'class="[^"]*"' page.html | grep -iE 'whatson|title|time|eyebrow|remain' | sort | uniq -c
-          echo "==== FULL HTML ===="
-          cat page.html
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.10.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - run: node --input-type=module -e "const s=await import('fs'); " && pnpm start
+        env:
+          NTFY_TOPIC: debug-dummy-${{ github.run_id }}
