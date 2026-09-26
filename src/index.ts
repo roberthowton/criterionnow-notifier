@@ -8,29 +8,82 @@ const POLL_THRESHOLD_MIN = 4; // start tight polling when <= this many minutes r
 const LOOP_INTERVAL_MS = 20_000;
 const LOOP_MAX_MS = 3 * 60_000;
 
+const UPCOMING_COUNT = 5; // films listed under "Up next" in the notification
+const SCHEDULE_TZ = process.env.SCHEDULE_TZ ?? "America/New_York";
+
 interface PageData {
   title: string;
   remainingMin: number | null;
+  upcoming: ScheduleEntry[];
+}
+
+// Tried in order. whatsonnow redirects to the current live page, so following it keeps working
+// if the /live/<media_id>/<slug> route changes; the hardcoded route is the fallback.
+const SOURCE_URLS = [
+  "https://whatsonnow.criterionchannel.com/",
+  "https://www.criterionchannel.com/live/1emmgvqX/criterion-24-7",
+];
+
+interface ScheduleEntry {
+  title: string;
+  start: number;
+  end: number;
 }
 
 async function fetchPage(): Promise<PageData> {
-  const res = await fetch("https://whatsonnow.criterionchannel.com/");
-  const html = await res.text();
-  const $ = load(html);
-  const title = $("h2.whatson__title").first().text().trim();
-  if (!title) throw new Error("Could not find film title");
-  const timerText = $(".whatson__eyebrow--bold").first().text().trim();
-  const remainingMin = parseMinutes(timerText);
-  return { title, remainingMin };
+  const errors: string[] = [];
+  const pages: string[] = [];
+  for (const url of SOURCE_URLS) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      const html = await res.text();
+      const data = fromSchedule(html);
+      if (data) return data;
+      pages.push(html);
+      errors.push(`${url}: no current entry in schedule`);
+    } catch (err) {
+      errors.push(`${url}: ${(err as Error).message}`);
+    }
+  }
+
+  // Fallback: the rendered hero title (no timing info available)
+  for (const html of pages) {
+    const title = load(html)('main h1[class*="__title"]').first().text().trim();
+    if (title) {
+      console.warn(`Schedule not found, using page title:\n  ${errors.join("\n  ")}`);
+      return { title, remainingMin: null, upcoming: [] };
+    }
+  }
+  throw new Error(`Could not find film title:\n  ${errors.join("\n  ")}`);
 }
 
-function parseMinutes(text: string): number | null {
-  let total = 0;
-  const hours = text.match(/(\d+)\s+hour/);
-  const mins = text.match(/(\d+)\s+min/);
-  if (hours) total += parseInt(hours[1]) * 60;
-  if (mins) total += parseInt(mins[1]);
-  return hours || mins ? total : null;
+function fromSchedule(html: string): PageData | null {
+  const now = Date.now();
+  const schedule = parseSchedule(html);
+  const current = schedule.find((e) => e.start <= now && now < e.end);
+  if (!current) return null;
+  return {
+    title: current.title,
+    remainingMin: Math.ceil((current.end - now) / 60_000),
+    upcoming: schedule.filter((e) => e.start >= current.end).slice(0, UPCOMING_COUNT),
+  };
+}
+
+// The schedule lives in the Next.js RSC payload: self.__next_f.push([1,"<json-escaped string>"])
+function parseSchedule(html: string): ScheduleEntry[] {
+  const payload = [...html.matchAll(/self\.__next_f\.push\((\[1,"(?:[^"\\]|\\.)*"\])\)/g)]
+    .map((m) => (JSON.parse(m[1]) as [number, string])[1])
+    .join("");
+  const entries = new Map<string, ScheduleEntry>();
+  const re = /\{"startTime":"([^"]+)","endTime":"([^"]+)","episodeTitle":("(?:[^"\\]|\\.)*")/g;
+  for (const m of payload.matchAll(re)) {
+    const start = Date.parse(m[1]);
+    const end = Date.parse(m[2]);
+    if (isNaN(start) || isNaN(end)) continue;
+    entries.set(m[1], { title: JSON.parse(m[3]), start, end });
+  }
+  return [...entries.values()].sort((a, b) => a.start - b.start);
 }
 
 interface State {
@@ -48,12 +101,23 @@ function writeState(data: PageData): void {
   writeFileSync(STATE_FILE, JSON.stringify(state));
 }
 
+const timeFmt = new Intl.DateTimeFormat("en-US", {
+  timeZone: SCHEDULE_TZ,
+  hour: "numeric",
+  minute: "2-digit",
+});
+
 function formatBody(data: PageData): string {
-  if (data.remainingMin === null) return data.title;
-  const h = Math.floor(data.remainingMin / 60);
-  const m = data.remainingMin % 60;
-  const duration = h > 0 ? `${h}h ${m}m` : `${m}m`;
-  return `${data.title} (${duration} remaining)`;
+  let now = data.title;
+  if (data.remainingMin !== null) {
+    const h = Math.floor(data.remainingMin / 60);
+    const m = data.remainingMin % 60;
+    const duration = h > 0 ? `${h}h ${m}m` : `${m}m`;
+    now += ` (${duration} remaining)`;
+  }
+  if (data.upcoming.length === 0) return now;
+  const next = data.upcoming.map((e) => `${timeFmt.format(e.start)}  ${e.title}`);
+  return [now, "", "Up next:", ...next].join("\n");
 }
 
 async function notify(data: PageData): Promise<void> {
