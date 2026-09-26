@@ -8,9 +8,13 @@ const POLL_THRESHOLD_MIN = 4; // start tight polling when <= this many minutes r
 const LOOP_INTERVAL_MS = 20_000;
 const LOOP_MAX_MS = 3 * 60_000;
 
+const UPCOMING_COUNT = 5; // films listed under "Up next" in the notification
+const SCHEDULE_TZ = process.env.SCHEDULE_TZ ?? "America/New_York";
+
 interface PageData {
   title: string;
   remainingMin: number | null;
+  upcoming: ScheduleEntry[];
 }
 
 // whatsonnow.criterionchannel.com now redirects here (site redesign, Sep 2026)
@@ -28,16 +32,21 @@ async function fetchPage(): Promise<PageData> {
   const html = await res.text();
 
   const now = Date.now();
-  const current = parseSchedule(html).find((e) => e.start <= now && now < e.end);
+  const schedule = parseSchedule(html);
+  const current = schedule.find((e) => e.start <= now && now < e.end);
   if (current) {
-    return { title: current.title, remainingMin: Math.ceil((current.end - now) / 60_000) };
+    return {
+      title: current.title,
+      remainingMin: Math.ceil((current.end - now) / 60_000),
+      upcoming: schedule.filter((e) => e.start >= current.end).slice(0, UPCOMING_COUNT),
+    };
   }
 
   // Fallback: the rendered hero title (no timing info available)
   const $ = load(html);
   const title = $('main h1[class*="__title"]').first().text().trim();
   if (!title) throw new Error("Could not find film title");
-  return { title, remainingMin: null };
+  return { title, remainingMin: null, upcoming: [] };
 }
 
 // The schedule lives in the Next.js RSC payload: self.__next_f.push([1,"<json-escaped string>"])
@@ -53,7 +62,7 @@ function parseSchedule(html: string): ScheduleEntry[] {
     if (isNaN(start) || isNaN(end)) continue;
     entries.set(m[1], { title: JSON.parse(m[3]), start, end });
   }
-  return [...entries.values()];
+  return [...entries.values()].sort((a, b) => a.start - b.start);
 }
 
 interface State {
@@ -71,12 +80,23 @@ function writeState(data: PageData): void {
   writeFileSync(STATE_FILE, JSON.stringify(state));
 }
 
+const timeFmt = new Intl.DateTimeFormat("en-US", {
+  timeZone: SCHEDULE_TZ,
+  hour: "numeric",
+  minute: "2-digit",
+});
+
 function formatBody(data: PageData): string {
-  if (data.remainingMin === null) return data.title;
-  const h = Math.floor(data.remainingMin / 60);
-  const m = data.remainingMin % 60;
-  const duration = h > 0 ? `${h}h ${m}m` : `${m}m`;
-  return `${data.title} (${duration} remaining)`;
+  let now = data.title;
+  if (data.remainingMin !== null) {
+    const h = Math.floor(data.remainingMin / 60);
+    const m = data.remainingMin % 60;
+    const duration = h > 0 ? `${h}h ${m}m` : `${m}m`;
+    now += ` (${duration} remaining)`;
+  }
+  if (data.upcoming.length === 0) return now;
+  const next = data.upcoming.map((e) => `${timeFmt.format(e.start)}  ${e.title}`);
+  return [now, "", "Up next:", ...next].join("\n");
 }
 
 async function notify(data: PageData): Promise<void> {
