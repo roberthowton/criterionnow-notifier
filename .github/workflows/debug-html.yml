@@ -1,0 +1,17 @@
+name: Debug HTML dump
+
+on:
+  push:
+    branches: [claude/criterion-notifier-diagnosis-3wrz2e]
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -sSL -A "Mozilla/5.0" -D - https://whatsonnow.criterionchannel.com/ -o page.html
+          echo "==== bytes: $(wc -c < page.html)"
+          echo "==== class names containing whatson/title/time:"
+          grep -oE 'class="[^"]*"' page.html | grep -iE 'whatson|title|time|eyebrow|remain' | sort | uniq -c
+          echo "==== FULL HTML ===="
+          cat page.html
